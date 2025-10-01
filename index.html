@@ -57,13 +57,9 @@
   <div class="wrap">
     <header>
       <div class="logo">🃏 <b>500 зл. карт</b> — онлайн</div>
-      <div class="bar">
-        <span id="connStatus" class="chip" title="Проверка соединения">Статус: не проверено</span>
-        <button class="ghost" id="btnCheck">Проверить соединение</button>
-        <button class="ghost" id="btnDeck">Колода</button>
-        <button class="ghost" id="btnHow">Правила</button>
-        <button class="ghost" id="btnTests">🧪 Тесты</button>
-        <button id="btnNew">Новая игра</button>
+      $1
+        <button class=\"ghost hidden\" id=\"btnStart\">Старт игры (ведущий)</button>
+        <button class=\"ghost hidden\" id=\"btnToJudge\">→ Фаза судьи</button>
       </div>
     </header>
 
@@ -334,6 +330,10 @@
     if (!db || !local.roomId) return;
     stateRef().off(); playersRef().off(); submissionsRef().off(); perPlayerRef(local.playerId).off();
     stateRef().on('value', snap=>{ const s=snap.val(); if(!s) return; game.state = s; renderState(); });
+    playersRef().on('value', snap=>{ const players = snap.val()||{}; renderPlayers(players); maybeAutoStart(players); });
+    submissionsRef().on('value', snap=>{ renderSubmissions(snap.val()||{}); });
+    perPlayerRef(local.playerId).on('value', snap=>{ renderHand((snap.val()&&snap.val().hand)||[]); });
+  });
     playersRef().on('value', snap=>{ renderPlayers(snap.val()||{}); });
     submissionsRef().on('value', snap=>{ renderSubmissions(snap.val()||{}); });
     perPlayerRef(local.playerId).on('value', snap=>{ renderHand((snap.val()&&snap.val().hand)||[]); });
@@ -374,6 +374,22 @@
   function renderState(){
     const s = game.state;
     if (s.phase==='lobby'){ $('#screenLobby').classList.remove('hidden'); $('#screenGame').classList.add('hidden'); }
+    else { $('#screenLobby').classList.add('hidden'); $('#screenGame').classList.remove('hidden'); }
+    $('#roomIdLabel').textContent = local.roomId || '—';
+    $('#roundN').textContent = s.round || 0; $('#roundTotal').textContent = s.roundsTotal || 10;
+    $('#judgeName').textContent = s.judgeName || '—'; $('#judgeName2').textContent = s.judgeName || '—';
+    $('#blackText').innerHTML = escapeHtml(s.blackCard || '—');
+    $('#turnHint').textContent = 'Фаза: ' + (s.phase||'—');
+    // Фазы видимости
+    $('#phaseHands').classList.toggle('hidden', s.phase!=='hands');
+    $('#phaseJudge').classList.toggle('hidden', s.phase!=='judge');
+    $('#phaseWinner').classList.toggle('hidden', s.phase!=='winner');
+    // Кнопки ведущего
+    const showStart = local.isHost && s.phase==='lobby';
+    const showToJudge = local.isHost && s.phase==='hands';
+    $('#btnStart')?.classList.toggle('hidden', !showStart);
+    $('#btnToJudge')?.classList.toggle('hidden', !showToJudge);
+  }
     else { $('#screenLobby').classList.add('hidden'); $('#screenGame').classList.remove('hidden'); }
     $('#roomIdLabel').textContent = local.roomId || '—';
     $('#roundN').textContent = s.round || 0; $('#roundTotal').textContent = s.roundsTotal || 10;
@@ -427,6 +443,16 @@
   }
 
   // ===== Ведущий: старт/раунды/победитель =====
+  function maybeAutoStart(players){
+    try{
+      if (!local.isHost) return;
+      if ((game.state?.phase||'lobby')!=='lobby') return;
+      const count = Object.keys(players||{}).length;
+      if (count >= 2) { startGameHost(); }
+    } catch(e){ console.warn('autoStart skipped', e); }
+  }
+
+  
   async function startGameHost(){
     if (!local.isHost) return toast('Только ведущий может стартовать');
     // подготовка: назначить судью 0, выдать карты всем, чёрную карту
@@ -484,6 +510,8 @@
   $('#btnCreate').onclick=async()=>{ await createRoom(); };
   $('#btnJoin').onclick=async()=>{ const id=($('#roomInput').value||'').trim(); if(!id) return toast('Введите ID комнаты'); await joinRoom(id); };
   $('#btnCopy').onclick=()=>{ navigator.clipboard.writeText($('#shareLink').value); toast('Ссылка скопирована'); };
+  $('#btnStart').onclick = startGameHost;
+  $('#btnToJudge').onclick = toJudgePhaseHost; toast('Ссылка скопирована'); };
 
   $('#nextRound').onclick=nextRoundHost;
 
