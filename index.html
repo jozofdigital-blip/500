@@ -40,26 +40,32 @@
     .link{color:#b7c1ff;text-decoration:underline;cursor:pointer}
     .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:14px;background:#1c2233;border:1px solid var(--border);padding:10px 12px;border-radius:12px;box-shadow:var(--shadow)}
     @media (max-width: 600px){
-    .wrap{max-width:600px;padding:12px}
-    header{flex-wrap:wrap;gap:8px}
-    .logo{font-size:18px}
-    .bar{gap:6px}
-    button,.btn{padding:12px 14px;border-radius:14px;font-size:16px}
-    .panel{padding:12px;border-radius:16px}
-    .cards{grid-template-columns: 1fr}
-    .card{padding:16px;font-size:18px}
-    .big{font-size:18px}
-    #playersList .kicker{padding:10px 0}
-  }
-</style>
+      .wrap{max-width:600px;padding:12px}
+      header{flex-wrap:wrap;gap:8px}
+      .logo{font-size:18px}
+      .bar{gap:6px}
+      button,.btn{padding:12px 14px;border-radius:14px;font-size:16px}
+      .panel{padding:12px;border-radius:16px}
+      .cards{grid-template-columns: 1fr}
+      .card{padding:16px;font-size:18px}
+      .big{font-size:18px}
+      #playersList .kicker{padding:10px 0}
+    }
+  </style>
 </head>
 <body>
   <div class="wrap">
     <header>
       <div class="logo">🃏 <b>500 зл. карт</b> — онлайн</div>
-      $1
-        <button class=\"ghost hidden\" id=\"btnStart\">Старт игры (ведущий)</button>
-        <button class=\"ghost hidden\" id=\"btnToJudge\">→ Фаза судьи</button>
+      <div class="bar">
+        <span id="connStatus" class="chip" title="Проверка соединения">Статус: не проверено</span>
+        <button class="ghost" id="btnCheck">Проверить соединение</button>
+        <button class="ghost" id="btnDeck">Колода</button>
+        <button class="ghost" id="btnHow">Правила</button>
+        <button class="ghost" id="btnTests">🧪 Тесты</button>
+        <button id="btnNew">Новая игра</button>
+        <button class="ghost hidden" id="btnStart">Старт игры (ведущий)</button>
+        <button class="ghost hidden" id="btnToJudge">→ Фаза судьи</button>
       </div>
     </header>
 
@@ -227,15 +233,15 @@
 
   // ===== Firebase init (заполните конфиг) =====
   const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyDRtpegXwTsSf77dPIOGDIyBFvib_GgUcM",
-  authDomain: "z-e86ee.firebaseapp.com",
-  databaseURL: "https://z-e86ee-default-rtdb.europe-west1.firebasedatabase.app",
-  projectId: "z-e86ee",
-  storageBucket: "z-e86ee.appspot.com",
-  messagingSenderId: "268263276853",
-  appId: "1:268263276853:web:0195c839f5dd38e7214c7c",
-  measurementId: "G-6ZBVR66GZE"
-};
+    apiKey: "AIzaSyDRtpegXwTsSf77dPIOGDIyBFvib_GgUcM",
+    authDomain: "z-e86ee.firebaseapp.com",
+    databaseURL: "https://z-e86ee-default-rtdb.europe-west1.firebasedatabase.app",
+    projectId: "z-e86ee",
+    storageBucket: "z-e86ee.appspot.com",
+    messagingSenderId: "268263276853",
+    appId: "1:268263276853:web:0195c839f5dd38e7214c7c",
+    measurementId: "G-6ZBVR66GZE"
+  };
 
   function isConfigFilled(cfg){
     return Object.values(cfg).every(v=> typeof v==='string' && v && !v.startsWith('PASTE_')) && /https:\/\/.+/.test(cfg.databaseURL||'');
@@ -333,10 +339,6 @@
     playersRef().on('value', snap=>{ const players = snap.val()||{}; renderPlayers(players); maybeAutoStart(players); });
     submissionsRef().on('value', snap=>{ renderSubmissions(snap.val()||{}); });
     perPlayerRef(local.playerId).on('value', snap=>{ renderHand((snap.val()&&snap.val().hand)||[]); });
-  });
-    playersRef().on('value', snap=>{ renderPlayers(snap.val()||{}); });
-    submissionsRef().on('value', snap=>{ renderSubmissions(snap.val()||{}); });
-    perPlayerRef(local.playerId).on('value', snap=>{ renderHand((snap.val()&&snap.val().hand)||[]); });
   }
 
   async function registerPlayer(){
@@ -390,17 +392,6 @@
     $('#btnStart')?.classList.toggle('hidden', !showStart);
     $('#btnToJudge')?.classList.toggle('hidden', !showToJudge);
   }
-    else { $('#screenLobby').classList.add('hidden'); $('#screenGame').classList.remove('hidden'); }
-    $('#roomIdLabel').textContent = local.roomId || '—';
-    $('#roundN').textContent = s.round || 0; $('#roundTotal').textContent = s.roundsTotal || 10;
-    $('#judgeName').textContent = s.judgeName || '—'; $('#judgeName2').textContent = s.judgeName || '—';
-    $('#blackText').innerHTML = escapeHtml(s.blackCard || '—');
-    $('#turnHint').textContent = 'Фаза: ' + (s.phase||'—');
-    // Фазы видимости
-    $('#phaseHands').classList.toggle('hidden', s.phase!=='hands');
-    $('#phaseJudge').classList.toggle('hidden', s.phase!=='judge');
-    $('#phaseWinner').classList.toggle('hidden', s.phase!=='winner');
-  }
 
   function renderPlayers(players){
     const box=$('#playersList'); box.innerHTML='';
@@ -452,7 +443,6 @@
     } catch(e){ console.warn('autoStart skipped', e); }
   }
 
-  
   async function startGameHost(){
     if (!local.isHost) return toast('Только ведущий может стартовать');
     // подготовка: назначить судью 0, выдать карты всем, чёрную карту
@@ -495,8 +485,13 @@
     const out=[]; for(const t of tests){ try{ await t.fn(); out.push({name:t.name,ok:true}); }catch(e){ out.push({name:t.name,ok:false,err:e.message}); } }
     const lines = out.map(r=> `${r.ok?'✅':'❌'} ${r.name}${r.ok?'':` — ${r.err}`}`).join('\n'); $('#testsOutput').textContent=lines||'Нет тестов'; $('#dlgTests').showModal(); console.table(out);
   }
+  // не меняем существующие тесты
   test('ensureMinimumDeck(): >=120/500',()=>{ const base={black:[],white:[]}; ensureMinimumDeck(base); expect(base.black.length>=120,'black<120'); expect(base.white.length>=500,'white<500'); });
   test('fillBlack() placeholder',()=>{ const s=fillBlack('A ____ B','X'); expect(/<b>X<\/b>/.test(s),'no replace'); });
+  // дополнительные тесты (не зависят от Firebase/DOM)
+  test('fillBlack() no placeholder path',()=>{ const s=fillBlack('Привет','мир'); expect(/Привет\s—\s<b>мир<\/b>/.test(s),'no dash concat'); });
+  test('escapeHtml()',()=>{ const s=escapeHtml('<tag> & "\'"'); expect(s.includes('&lt;tag&gt;') && s.includes('&amp;') && s.includes('&quot;') && s.includes('&#39;'),'escape failed'); });
+  test('ensureMinimumDeck() idempotent-ish',()=>{ const base={black:["Q"],white:["W"]}; ensureMinimumDeck(base); const b1=base.black.length,w1=base.white.length; ensureMinimumDeck(base); expect(base.black.length>=b1 && base.white.length>=w1,'not growing to min'); });
   
   // ===== Обработчики =====
   $('#btnHow').onclick=()=> $('#dlgRules').showModal();
@@ -511,8 +506,7 @@
   $('#btnJoin').onclick=async()=>{ const id=($('#roomInput').value||'').trim(); if(!id) return toast('Введите ID комнаты'); await joinRoom(id); };
   $('#btnCopy').onclick=()=>{ navigator.clipboard.writeText($('#shareLink').value); toast('Ссылка скопирована'); };
   $('#btnStart').onclick = startGameHost;
-  $('#btnToJudge').onclick = toJudgePhaseHost; toast('Ссылка скопирована'); };
-
+  $('#btnToJudge').onclick = toJudgePhaseHost;
   $('#nextRound').onclick=nextRoundHost;
 
   function updateShareLink(){
