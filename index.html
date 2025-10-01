@@ -39,13 +39,27 @@
     .hidden{display:none!important}
     .link{color:#b7c1ff;text-decoration:underline;cursor:pointer}
     .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:14px;background:#1c2233;border:1px solid var(--border);padding:10px 12px;border-radius:12px;box-shadow:var(--shadow)}
-  </style>
+    @media (max-width: 600px){
+    .wrap{max-width:600px;padding:12px}
+    header{flex-wrap:wrap;gap:8px}
+    .logo{font-size:18px}
+    .bar{gap:6px}
+    button,.btn{padding:12px 14px;border-radius:14px;font-size:16px}
+    .panel{padding:12px;border-radius:16px}
+    .cards{grid-template-columns: 1fr}
+    .card{padding:16px;font-size:18px}
+    .big{font-size:18px}
+    #playersList .kicker{padding:10px 0}
+  }
+</style>
 </head>
 <body>
   <div class="wrap">
     <header>
       <div class="logo">🃏 <b>500 зл. карт</b> — онлайн</div>
       <div class="bar">
+        <span id="connStatus" class="chip" title="Проверка соединения">Статус: не проверено</span>
+        <button class="ghost" id="btnCheck">Проверить соединение</button>
         <button class="ghost" id="btnDeck">Колода</button>
         <button class="ghost" id="btnHow">Правила</button>
         <button class="ghost" id="btnTests">🧪 Тесты</button>
@@ -215,19 +229,48 @@
     const needB=Math.max(0, MIN_BLACK-(base.black?.length||0)); for(let i=0;i<needB;i++) base.black.push(blackStarts[i%blackStarts.length]);
   }
 
-  // ===== Firebase init (ЗАМЕНИТЕ НА СВОЮ КОНФИГУРАЦИЮ) =====
+  // ===== Firebase init (заполните конфиг) =====
   const FIREBASE_CONFIG = {
   apiKey: "AIzaSyDRtpegXwTsSf77dPIOGDIyBFvib_GgUcM",
   authDomain: "z-e86ee.firebaseapp.com",
   databaseURL: "https://z-e86ee-default-rtdb.europe-west1.firebasedatabase.app",
   projectId: "z-e86ee",
-  storageBucket: "z-e86ee.firebasestorage.app",
+  storageBucket: "z-e86ee.appspot.com",
   messagingSenderId: "268263276853",
   appId: "1:268263276853:web:0195c839f5dd38e7214c7c",
   measurementId: "G-6ZBVR66GZE"
 };
-  firebase.initializeApp(FIREBASE_CONFIG);
-  const db = firebase.database();
+
+  function isConfigFilled(cfg){
+    return Object.values(cfg).every(v=> typeof v==='string' && v && !v.startsWith('PASTE_')) && /https:\/\/.+/.test(cfg.databaseURL||'');
+  }
+
+  let db = null; let firebaseInitError = null; let connectivityOk = false; let lastConnMsg = '';
+  try {
+    if (!isConfigFilled(FIREBASE_CONFIG)) throw new Error('Не заполнен FIREBASE_CONFIG');
+    firebase.initializeApp(FIREBASE_CONFIG);
+    db = firebase.database();
+  } catch (e){
+    firebaseInitError = e;
+    console.error('Firebase init error:', e);
+  }
+
+  async function testDbConnection(){
+    if (!db){ lastConnMsg='Firebase не инициализирован'; updateConnStatus(false,lastConnMsg); return false; }
+    try {
+      const pingRef = db.ref('_ping').push();
+      await pingRef.set({ t: Date.now(), ua: navigator.userAgent.substring(0,80) });
+      await pingRef.remove();
+      lastConnMsg='OK: есть доступ к Realtime DB';
+      updateConnStatus(true,lastConnMsg);
+      return true;
+    } catch(e){
+      console.error('DB write test failed', e);
+      lastConnMsg = (e && (e.code||e.message)) || 'ошибка записи в БД';
+      updateConnStatus(false,lastConnMsg);
+      return false;
+    }
+  }
 
   // ===== ЛОГИКА КОМНАТЫ / СОСТОЯНИЕ =====
   const STORAGE_KEY = 'zlobnye_karty_deck_v1';
@@ -238,7 +281,8 @@
                  deck: { black:[], white:[], discardBlack:[], discardWhite:[] } };
 
   function fillBlack(black, white){ return black.includes('____') ? black.replace('____', `<b>${escapeHtml(white)}</b>`) : `${black} — <b>${escapeHtml(white)}</b>`; }
-  function escapeHtml(str){ return String(str).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+  function escapeHtml(str){ return String(str).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",
+    ">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
 
   // ===== Работа с колодой (на стороне ведущего) =====
   function loadDeckLocal(){
@@ -259,32 +303,39 @@
   const submissionsRef = ()=> roomRef().child('submissions');
 
   async function createRoom(){
+    if (!db){ toast('Ошибка: Firebase не инициализирован. Заполните конфиг.'); console.error(firebaseInitError); return; }
+    if (!connectivityOk){ const ok = await testDbConnection(); if(!ok){ toast('Нет доступа к базе. Проверьте конфиг/правила.'); return; } connectivityOk=true; }
     const id = (Math.random().toString(36).slice(2,8)).toUpperCase();
     local.roomId = id; local.isHost = true;
     loadDeckLocal();
-    await roomRef().set({ hostId: local.playerId, createdAt: Date.now() });
-    await stateRef().set({ ...game.state, phase:'lobby', sfwOnly: $('#sfwOnly').checked });
-    await db.ref(`rooms/${local.roomId}/deck`).set({ black: game.deck.black, white: game.deck.white });
-    updateShareLink();
-    subscribeRoom();
-    toast('Комната создана');
+    try{
+      await roomRef().set({ hostId: local.playerId, createdAt: Date.now() });
+      await stateRef().set({ ...game.state, phase:'lobby', sfwOnly: $('#sfwOnly').checked });
+      await db.ref(`rooms/${local.roomId}/deck`).set({ black: game.deck.black, white: game.deck.white });
+      updateShareLink();
+      subscribeRoom();
+      subscribeHostEvents();
+      await registerPlayer();
+      renderState();
+      toast('Комната создана');
+    } catch(e){ console.error('createRoom error', e); toast('Не удалось создать комнату: ' + (e.code||e.message)); }
   }
 
   async function joinRoom(id){
+    if (!db){ toast('Ошибка: Firebase не инициализирован'); console.error(firebaseInitError); return; }
+    const ok = connectivityOk || await testDbConnection(); if(!ok){ toast('Нет доступа к базе. Проверьте конфиг/правила.'); return; } connectivityOk=true;
     local.roomId = id.toUpperCase();
     local.isHost = false;
     subscribeRoom();
-    toast('Подключение к комнате…');
+    try{ await registerPlayer(); toast('Подключились к комнате'); } catch(e){ console.error('joinRoom/register error', e); toast('Не удалось подключиться: ' + (e.code||e.message)); }
   }
 
   function subscribeRoom(){
-    // State
+    if (!db || !local.roomId) return;
+    stateRef().off(); playersRef().off(); submissionsRef().off(); perPlayerRef(local.playerId).off();
     stateRef().on('value', snap=>{ const s=snap.val(); if(!s) return; game.state = s; renderState(); });
-    // Players
     playersRef().on('value', snap=>{ renderPlayers(snap.val()||{}); });
-    // Submissions
     submissionsRef().on('value', snap=>{ renderSubmissions(snap.val()||{}); });
-    // Personal hand
     perPlayerRef(local.playerId).on('value', snap=>{ renderHand((snap.val()&&snap.val().hand)||[]); });
   }
 
@@ -397,7 +448,7 @@
     // +1 очко игроку
     const pRef = playersRef().child(playerId); const pSnap = await pRef.get(); const p=pSnap.val()||{}; await pRef.update({ score:(p.score||0)+1 });
     await stateRef().update({ phase:'winner', lastWinnerName: p.name, lastAnswer: answer });
-    $('#winnerLine').innerHTML = `${escapeHtml(p.name||'—')} получает очко за: ${fillBlack(game.state.blackCard||'', escapeHtml(answer))}`;
+    $('#winnerLine').innerHTML = `${escapeHtml(p.name||'—')} получает очко за: ${fillBlack(game.state.blackCard||'', answer)}`;
   }
 
   async function nextRoundHost(){
@@ -430,8 +481,8 @@
   $('#btnImport').onclick=async()=>{ const inp=document.createElement('input'); inp.type='file'; inp.accept='application/json'; inp.onchange=async()=>{ const f=inp.files[0]; if(!f) return; $('#deckJson').value=await f.text(); }; inp.click(); };
   $('#btnTests').onclick=runTests;
   $('#btnNew').onclick=()=> location.href = location.origin + location.pathname;
-  $('#btnCreate').onclick=async()=>{ await createRoom(); updateShareLink(); renderState(); subscribeHostEvents(); };
-  $('#btnJoin').onclick=async()=>{ const id=($('#roomInput').value||'').trim(); if(!id) return toast('Введите ID комнаты'); await joinRoom(id); renderState(); await registerPlayer(); };
+  $('#btnCreate').onclick=async()=>{ await createRoom(); };
+  $('#btnJoin').onclick=async()=>{ const id=($('#roomInput').value||'').trim(); if(!id) return toast('Введите ID комнаты'); await joinRoom(id); };
   $('#btnCopy').onclick=()=>{ navigator.clipboard.writeText($('#shareLink').value); toast('Ссылка скопирована'); };
 
   $('#nextRound').onclick=nextRoundHost;
@@ -442,7 +493,8 @@
 
   // ===== Автоподключение по ?room= =====
   async function autoJoinFromURL(){
-    const url = new URL(location.href); const room=url.searchParams.get('room'); if(room){ $('#roomInput').value=room; await joinRoom(room); await registerPlayer(); renderState(); }
+    const url = new URL(location.href); const room=url.searchParams.get('room');
+    if(room){ $('#roomInput').value=room; await joinRoom(room); }
   }
 
   // ===== Инициализация =====
@@ -450,8 +502,11 @@
     $('#playerName').value = localStorage.getItem('playerName') || '';
     $('#deckJson').value = JSON.stringify(DEMO_DECK, null, 2);
     const room = new URL(location.href).searchParams.get('room'); if (room){ $('#roomInput').value=room; $('#shareRow').style.display='flex'; $('#shareLink').value=location.href; }
+    if (firebaseInitError){ updateConnStatus(false, 'Ошибка инициализации: '+firebaseInitError.message); }
   }
-  init(); autoJoinFromURL();
+  function updateConnStatus(ok,msg){ const el=$('#connStatus'); if(!el) return; el.textContent='Статус: ' + (ok?'подключено':'ошибка'); el.title=msg||''; el.style.background= ok ? 'var(--accent-2)' : 'var(--chip)'; }
+  $('#btnCheck').onclick = async ()=>{ await testDbConnection(); toast('Проверка: '+ lastConnMsg); };
+  init(); autoJoinFromURL(); setTimeout(()=>testDbConnection(), 300);
   </script>
 </body>
 </html>
