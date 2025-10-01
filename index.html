@@ -282,9 +282,13 @@
   const game = { state: { round:0, roundsTotal:10, judgeIndex:0, phase:'lobby', blackCard:'', sfwOnly:true },
                  deck: { black:[], white:[], discardBlack:[], discardWhite:[] } };
 
-  function fillBlack(black, white){ return black.includes('____') ? black.replace('____', `<b>${escapeHtml(white)}</b>`) : `${black} — <b>${escapeHtml(white)}</b>`; }
-  function escapeHtml(str){ return String(str).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",
-    ">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+  function fillBlack(black, white){
+    return black.includes('____') ? black.replace('____', `<b>${escapeHtml(white)}</b>`) : `${black} — <b>${escapeHtml(white)}</b>`;
+  }
+  function escapeHtml(str){
+    const map = { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' };
+    return String(str).replace(/[&<>"']/g, ch => map[ch]);
+  }
 
   // ===== Работа с колодой (на стороне ведущего) =====
   function loadDeckLocal(){
@@ -304,6 +308,15 @@
   const perPlayerRef = (pid)=> roomRef().child(`perPlayer/${pid}`); // руки
   const submissionsRef = ()=> roomRef().child('submissions');
 
+  // Хелпер: синхронизируем роль хоста при любых перезаходах
+  function watchHost(){
+    roomRef().child('hostId').on('value', snap => {
+      const was = local.isHost;
+      local.isHost = (snap.val() === local.playerId);
+      if (local.isHost !== was) renderState();
+    });
+  }
+
   async function createRoom(){
     if (!db){ toast('Ошибка: Firebase не инициализирован. Заполните конфиг.'); console.error(firebaseInitError); return; }
     if (!connectivityOk){ const ok = await testDbConnection(); if(!ok){ toast('Нет доступа к базе. Проверьте конфиг/правила.'); return; } connectivityOk=true; }
@@ -316,6 +329,7 @@
       await db.ref(`rooms/${local.roomId}/deck`).set({ black: game.deck.black, white: game.deck.white });
       updateShareLink();
       subscribeRoom();
+      watchHost();
       subscribeHostEvents();
       await registerPlayer();
       renderState();
@@ -329,16 +343,26 @@
     local.roomId = id.toUpperCase();
     local.isHost = false;
     subscribeRoom();
+    watchHost();
     try{ await registerPlayer(); toast('Подключились к комнате'); } catch(e){ console.error('joinRoom/register error', e); toast('Не удалось подключиться: ' + (e.code||e.message)); }
   }
 
+  let playersCount = 0;
   function subscribeRoom(){
     if (!db || !local.roomId) return;
     stateRef().off(); playersRef().off(); submissionsRef().off(); perPlayerRef(local.playerId).off();
     stateRef().on('value', snap=>{ const s=snap.val(); if(!s) return; game.state = s; renderState(); });
-    playersRef().on('value', snap=>{ const players = snap.val()||{}; renderPlayers(players); maybeAutoStart(players); });
+    playersRef().on('value', snap=>{ const players = snap.val()||{}; playersCount = Object.keys(players).length; renderPlayers(players); maybeAutoStart(players); updateHostButtons(); });
     submissionsRef().on('value', snap=>{ renderSubmissions(snap.val()||{}); });
     perPlayerRef(local.playerId).on('value', snap=>{ renderHand((snap.val()&&snap.val().hand)||[]); });
+  }
+
+  function updateHostButtons(){
+    const startBtn = $('#btnStart');
+    if (startBtn){
+      startBtn.disabled = playersCount < 2;
+      startBtn.title = playersCount < 2 ? 'Нужно минимум 2 игрока' : '';
+    }
   }
 
   async function registerPlayer(){
@@ -374,7 +398,7 @@
 
   // ===== ЛОББИ/ИГРА ПЕРЕКЛЮЧЕНИЕ =====
   function renderState(){
-    const s = game.state;
+    const s = game.state || {};
     if (s.phase==='lobby'){ $('#screenLobby').classList.remove('hidden'); $('#screenGame').classList.add('hidden'); }
     else { $('#screenLobby').classList.add('hidden'); $('#screenGame').classList.remove('hidden'); }
     $('#roomIdLabel').textContent = local.roomId || '—';
@@ -391,6 +415,7 @@
     const showToJudge = local.isHost && s.phase==='hands';
     $('#btnStart')?.classList.toggle('hidden', !showStart);
     $('#btnToJudge')?.classList.toggle('hidden', !showToJudge);
+    updateHostButtons();
   }
 
   function renderPlayers(players){
@@ -437,7 +462,7 @@
   function maybeAutoStart(players){
     try{
       if (!local.isHost) return;
-      if ((game.state?.phase||'lobby')!=='lobby') return;
+      if ((game.state && game.state.phase)!=='lobby') return;
       const count = Object.keys(players||{}).length;
       if (count >= 2) { startGameHost(); }
     } catch(e){ console.warn('autoStart skipped', e); }
@@ -445,6 +470,7 @@
 
   async function startGameHost(){
     if (!local.isHost) return toast('Только ведущий может стартовать');
+    if (playersCount < 2) return toast('Нужно минимум 2 игрока');
     // подготовка: назначить судью 0, выдать карты всем, чёрную карту
     game.state.round=1; game.state.phase='hands'; game.state.roundsTotal=10; game.state.judgeIndex=0;
     const playersSnap = await playersRef().get(); const players = playersSnap.val()||{}; const ids = Object.keys(players);
@@ -485,12 +511,13 @@
     const out=[]; for(const t of tests){ try{ await t.fn(); out.push({name:t.name,ok:true}); }catch(e){ out.push({name:t.name,ok:false,err:e.message}); } }
     const lines = out.map(r=> `${r.ok?'✅':'❌'} ${r.name}${r.ok?'':` — ${r.err}`}`).join('\n'); $('#testsOutput').textContent=lines||'Нет тестов'; $('#dlgTests').showModal(); console.table(out);
   }
-  // не меняем существующие тесты
+  // существующие тесты (не меняем)
   test('ensureMinimumDeck(): >=120/500',()=>{ const base={black:[],white:[]}; ensureMinimumDeck(base); expect(base.black.length>=120,'black<120'); expect(base.white.length>=500,'white<500'); });
   test('fillBlack() placeholder',()=>{ const s=fillBlack('A ____ B','X'); expect(/<b>X<\/b>/.test(s),'no replace'); });
-  // дополнительные тесты (не зависят от Firebase/DOM)
+  // новые юнит-тесты
   test('fillBlack() no placeholder path',()=>{ const s=fillBlack('Привет','мир'); expect(/Привет\s—\s<b>мир<\/b>/.test(s),'no dash concat'); });
-  test('escapeHtml()',()=>{ const s=escapeHtml('<tag> & "\'"'); expect(s.includes('&lt;tag&gt;') && s.includes('&amp;') && s.includes('&quot;') && s.includes('&#39;'),'escape failed'); });
+  test('escapeHtml() double quote',()=>{ const s=escapeHtml('"'); expect(s==='&quot;','not &quot;'); });
+  test('escapeHtml() complex',()=>{ const s=escapeHtml('<tag> & "\'"'); expect(s.includes('&lt;tag&gt;') && s.includes('&amp;') && s.includes('&quot;') && s.includes('&#39;'),'escape failed'); });
   test('ensureMinimumDeck() idempotent-ish',()=>{ const base={black:["Q"],white:["W"]}; ensureMinimumDeck(base); const b1=base.black.length,w1=base.white.length; ensureMinimumDeck(base); expect(base.black.length>=b1 && base.white.length>=w1,'not growing to min'); });
   
   // ===== Обработчики =====
